@@ -1,0 +1,17 @@
+[package]
+name = "haiyuu"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+smolscale=["dep:smolscale"]
+
+[dependencies]
+anyhow = "1.0.86"
+futures-util = "0.3.30"
+oneshot = "0.1.8"
+smolscale = {version="0.4.7", optional=true}
+tachyonix = "0.3.0"
+thiserror = "1.0.63"
+
+
