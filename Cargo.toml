@@ -1,7 +1,11 @@
+
 [package]
 name = "haiyuu"
 version = "0.1.0"
 edition = "2021"
+description = "experimental actor-like library"
+license = "ISC"
+repository = "https://github.com/nullchinchilla/haiyuu"
 
 [features]
 smolscale=["dep:smolscale"]
@@ -13,5 +17,3 @@ oneshot = "0.1.8"
 smolscale = {version="0.4.7", optional=true}
 tachyonix = "0.3.0"
 thiserror = "1.0.63"
-
-
