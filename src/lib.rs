@@ -13,10 +13,10 @@ pub trait Process: Sized + Send + 'static {
     const MAILBOX_CAP: usize = 1;
 
     /// The "main function" of the process.
-    fn run(self, mailbox: &mut Mailbox<Self>) -> impl Future<Output = Self::Output> + Send;
+    fn run(&mut self, mailbox: &mut Mailbox<Self>) -> impl Future<Output = Self::Output> + Send;
 
     /// Spawn a process using a given processor.
-    fn spawn(self, processor: impl Processor) -> Handle<Self> {
+    fn spawn(mut self, processor: impl Processor) -> Handle<Self> {
         let (send, recv) = tachyonix::channel(Self::MAILBOX_CAP);
         let output = Arc::new(OnceLock::new());
         let handle = Handle {
@@ -86,10 +86,10 @@ impl<P: Process> Clone for Handle<P> {
 
 impl<P: Process> Handle<P> {
     /// Sends a message to the process.
-    pub async fn send(&self, msg: P::Message) -> Result<(), SendError<P::Output>> {
+    pub async fn send(&self, msg: P::Message) -> Result<(), SendError> {
         match self.send.send(msg).await {
             Ok(_) => Ok(()),
-            Err(_) => Err(SendError::ProcessStopped(self.output.get().unwrap())),
+            Err(_) => Err(SendError::ProcessStopped),
         }
     }
 
@@ -129,11 +129,11 @@ impl<P: Process> Clone for WeakHandle<P> {
 
 impl<P: Process> WeakHandle<P> {
     /// Sends a message to the process.
-    pub async fn send(&self, msg: P::Message) -> Result<(), SendError<P::Output>> {
+    pub async fn send(&self, msg: P::Message) -> Result<(), SendError> {
         if let Some(send) = self.send.upgrade() {
             match send.send(msg).await {
                 Ok(_) => Ok(()),
-                Err(_) => Err(SendError::ProcessStopped(self.output.get().unwrap())),
+                Err(_) => Err(SendError::ProcessStopped),
             }
         } else {
             Err(SendError::ProcessStopping)
@@ -159,7 +159,7 @@ impl<P, T, U> Handle<P>
 where
     P: Process<Message = Request<T, U>>,
 {
-    pub async fn request(&self, req: T) -> Result<U, RequestError<P::Output>> {
+    pub async fn request(&self, req: T) -> Result<U, RequestError> {
         let (respond, recv_response) = oneshot::channel();
         let req = Request {
             inner: req,
@@ -177,7 +177,7 @@ impl<P, T, U> WeakHandle<P>
 where
     P: Process<Message = Request<T, U>>,
 {
-    pub async fn request(&self, req: T) -> Result<U, RequestError<P::Output>> {
+    pub async fn request(&self, req: T) -> Result<U, RequestError> {
         let (respond, recv_response) = oneshot::channel();
         let req = Request {
             inner: req,
@@ -208,18 +208,18 @@ impl<T, U> Request<T, U> {
 
 #[derive(Error, Debug, Clone)]
 /// Error for doing a request/response cycle to a process.
-pub enum RequestError<'a, O: std::fmt::Debug> {
+pub enum RequestError {
     #[error("could not send to process: {0:?}")]
-    SendFailed(SendError<'a, O>),
+    SendFailed(SendError),
     #[error("process refused to respond")]
     RequestRefused,
 }
 
 #[derive(Error, Debug, Clone)]
 /// Error for sending into a handle.
-pub enum SendError<'a, O: std::fmt::Debug> {
-    #[error("process stopped with output {0:?}")]
-    ProcessStopped(&'a O),
+pub enum SendError {
+    #[error("process stopped")]
+    ProcessStopped,
     #[error("process is in the process of stopping")]
     ProcessStopping,
 }
