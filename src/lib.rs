@@ -1,7 +1,7 @@
 use std::{
     any::Any,
     future::Future,
-    sync::{Arc, OnceLock, Weak},
+    sync::{Arc, Mutex, OnceLock, Weak},
 };
 
 use thiserror::Error;
@@ -13,29 +13,29 @@ pub trait Process: Sized + Send + 'static {
     const MAILBOX_CAP: usize = 1;
 
     /// The "main function" of the process.
-    fn run(self, mailbox: &mut Mailbox<Self::Message>)
-        -> impl Future<Output = Self::Output> + Send;
+    fn run(self, mailbox: &mut Mailbox<Self>) -> impl Future<Output = Self::Output> + Send;
 
     /// Spawn a process using a given processor.
     fn spawn(self, processor: impl Processor) -> Handle<Self> {
         let (send, recv) = tachyonix::channel(Self::MAILBOX_CAP);
         let output = Arc::new(OnceLock::new());
-        let mut mailbox = Mailbox { recv };
-        let task = processor.spawn_future({
-            let output = output.clone();
-            async move {
-                let out = self.run(&mut mailbox).await;
-                output.set(out).unwrap();
-                drop(mailbox); // ensure dropping *after* output is set
-            }
-        });
-
-        Handle {
+        let handle = Handle {
             send: Arc::new(send),
-            output,
+            output: output.clone(),
 
-            _to_drop: Arc::new(task),
-        }
+            _to_drop: Arc::new(Mutex::new(Box::new(0))),
+        };
+        let mut mailbox = Mailbox {
+            recv,
+            handle: handle.downgrade(),
+        };
+        let task = processor.spawn_future(async move {
+            let out = self.run(&mut mailbox).await;
+            output.set(out).unwrap();
+            drop(mailbox); // ensure dropping *after* output is set
+        });
+        *handle._to_drop.lock().unwrap() = Box::new(task);
+        todo!()
     }
 
     /// Convenience method to spawn onto the smolscale executor.
@@ -46,16 +46,22 @@ pub trait Process: Sized + Send + 'static {
 }
 
 /// A mailbox for receiving messages addressed to a particular process.
-pub struct Mailbox<T> {
-    recv: tachyonix::Receiver<T>,
+pub struct Mailbox<P: Process> {
+    recv: tachyonix::Receiver<P::Message>,
+
+    handle: WeakHandle<P>,
 }
 
-impl<T> Mailbox<T> {
-    pub async fn recv(&mut self) -> T {
+impl<P: Process> Mailbox<P> {
+    pub async fn recv(&mut self) -> P::Message {
         match self.recv.recv().await {
             Ok(val) => val,
             Err(_) => futures_util::future::pending().await,
         }
+    }
+
+    pub fn handle(&self) -> WeakHandle<P> {
+        self.handle.clone()
     }
 }
 
@@ -64,7 +70,7 @@ pub struct Handle<P: Process> {
     send: Arc<tachyonix::Sender<P::Message>>,
     output: Arc<OnceLock<P::Output>>,
 
-    _to_drop: Arc<dyn Any + Send + Sync>,
+    _to_drop: Arc<Mutex<Box<dyn Any + Send + Sync>>>,
 }
 
 impl<P: Process> Clone for Handle<P> {
@@ -107,7 +113,18 @@ pub struct WeakHandle<P: Process> {
     send: Weak<tachyonix::Sender<P::Message>>,
     output: Arc<OnceLock<P::Output>>,
 
-    _to_drop: Weak<dyn Any + Send + Sync>,
+    _to_drop: Weak<Mutex<Box<dyn Any + Send + Sync>>>,
+}
+
+impl<P: Process> Clone for WeakHandle<P> {
+    fn clone(&self) -> Self {
+        Self {
+            send: self.send.clone(),
+            output: self.output.clone(),
+
+            _to_drop: self._to_drop.clone(),
+        }
+    }
 }
 
 impl<P: Process> WeakHandle<P> {
@@ -251,7 +268,7 @@ mod tests {
         type Message = String;
         type Output = i32;
 
-        async fn run(self, mailbox: &mut Mailbox<Self::Message>) -> Self::Output {
+        async fn run(self, mailbox: &mut Mailbox<Self>) -> Self::Output {
             let msg = mailbox.recv().await;
             assert_eq!(msg, "Hello");
             42
