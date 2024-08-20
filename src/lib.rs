@@ -176,14 +176,16 @@ where
 
 /// A request. This cannot be manually constructed, but should be used in conjunction with `send_request`.
 pub struct Request<T, U> {
-    pub inner: T,
+    inner: T,
     respond: oneshot::Sender<U>,
 }
 
 impl<T, U> Request<T, U> {
-    /// Respond to this request.
-    pub fn respond(self, response: U) {
-        let _ = self.respond.send(response);
+    /// Splits this request into the inner value, as well as a function for responding to the request.
+    pub fn take(self) -> (T, impl FnOnce(U)) {
+        (self.inner, move |u| {
+            let _ = self.respond.send(u);
+        })
     }
 }
 
