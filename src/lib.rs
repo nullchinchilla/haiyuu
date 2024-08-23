@@ -93,6 +93,14 @@ impl<P: Process> Handle<P> {
         }
     }
 
+    /// Sends a message to the process, or drop it if the mailbox is full.
+    pub async fn send_or_drop(&self, msg: P::Message) -> Result<(), SendError> {
+        match self.send.try_send(msg) {
+            Err(tachyonix::TrySendError::Closed(_)) => Err(SendError::ProcessStopped),
+            _ => Ok(()),
+        }
+    }
+
     /// Gets the output value of the process if it has terminated.
     pub fn output(&self) -> Option<&P::Output> {
         self.output.get()
@@ -134,6 +142,18 @@ impl<P: Process> WeakHandle<P> {
             match send.send(msg).await {
                 Ok(_) => Ok(()),
                 Err(_) => Err(SendError::ProcessStopped),
+            }
+        } else {
+            Err(SendError::ProcessStopping)
+        }
+    }
+
+    /// Sends a message to the process, or drop if the mailbox is full.
+    pub async fn send_or_drop(&self, msg: P::Message) -> Result<(), SendError> {
+        if let Some(send) = self.send.upgrade() {
+            match send.try_send(msg) {
+                Err(tachyonix::TrySendError::Closed(_)) => Err(SendError::ProcessStopped),
+                _ => Ok(()),
             }
         } else {
             Err(SendError::ProcessStopping)
@@ -268,7 +288,7 @@ mod tests {
         type Message = String;
         type Output = i32;
 
-        async fn run(self, mailbox: &mut Mailbox<Self>) -> Self::Output {
+        async fn run(&mut self, mailbox: &mut Mailbox<Self>) -> Self::Output {
             let msg = mailbox.recv().await;
             assert_eq!(msg, "Hello");
             42
