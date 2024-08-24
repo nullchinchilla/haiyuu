@@ -438,6 +438,7 @@ name = "haiyuu"
 version = "0.4.1"
 dependencies = [
  "anyhow",
+ "async-event",
  "futures-util",
  "oneshot",
  "smolscale",

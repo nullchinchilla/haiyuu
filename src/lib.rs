@@ -19,9 +19,11 @@ pub trait Process: Sized + Send + 'static {
     fn spawn(mut self, processor: impl Processor) -> Handle<Self> {
         let (send, recv) = tachyonix::channel(Self::MAILBOX_CAP);
         let output = Arc::new(OnceLock::new());
+        let death_event = Arc::new(async_event::Event::new());
         let handle = Handle {
-            send: Arc::new(send),
+            send,
             output: output.clone(),
+            death_event: death_event.clone(),
 
             _to_drop: Arc::new(Mutex::new(Box::new(0))),
         };
@@ -32,10 +34,11 @@ pub trait Process: Sized + Send + 'static {
         let task = processor.spawn_future(async move {
             let out = self.run(&mut mailbox).await;
             output.set(out).unwrap();
+            death_event.notify_all();
             drop(mailbox); // ensure dropping *after* output is set
         });
         *handle._to_drop.lock().unwrap() = Box::new(task);
-        todo!()
+        handle
     }
 
     /// Convenience method to spawn onto the smolscale executor.
@@ -67,8 +70,9 @@ impl<P: Process> Mailbox<P> {
 
 /// A handle to a running process. If all Handles to a process are dropped, the process will be dropped.
 pub struct Handle<P: Process> {
-    send: Arc<tachyonix::Sender<P::Message>>,
+    send: tachyonix::Sender<P::Message>,
     output: Arc<OnceLock<P::Output>>,
+    death_event: Arc<async_event::Event>,
 
     _to_drop: Arc<Mutex<Box<dyn Any + Send + Sync>>>,
 }
@@ -78,6 +82,7 @@ impl<P: Process> Clone for Handle<P> {
         Self {
             send: self.send.clone(),
             output: self.output.clone(),
+            death_event: self.death_event.clone(),
 
             _to_drop: self._to_drop.clone(),
         }
@@ -106,11 +111,17 @@ impl<P: Process> Handle<P> {
         self.output.get()
     }
 
+    /// Waits for the the output value of the process].
+    pub async fn wait(&self) -> &P::Output {
+        self.death_event.wait_until(|| self.output.get()).await
+    }
+
     /// Downgrades the Handle to a WeakHandle.
     pub fn downgrade(&self) -> WeakHandle<P> {
         WeakHandle {
-            send: Arc::downgrade(&self.send),
+            send: self.send.clone(),
             output: self.output.clone(),
+            death_event: self.death_event.clone(),
             _to_drop: Arc::downgrade(&self._to_drop),
         }
     }
@@ -118,8 +129,9 @@ impl<P: Process> Handle<P> {
 
 /// A "weak" handle to a process, which does not keep it running unless there are Handles to it.
 pub struct WeakHandle<P: Process> {
-    send: Weak<tachyonix::Sender<P::Message>>,
+    send: tachyonix::Sender<P::Message>,
     output: Arc<OnceLock<P::Output>>,
+    death_event: Arc<async_event::Event>,
 
     _to_drop: Weak<Mutex<Box<dyn Any + Send + Sync>>>,
 }
@@ -129,6 +141,7 @@ impl<P: Process> Clone for WeakHandle<P> {
         Self {
             send: self.send.clone(),
             output: self.output.clone(),
+            death_event: self.death_event.clone(),
 
             _to_drop: self._to_drop.clone(),
         }
@@ -138,25 +151,17 @@ impl<P: Process> Clone for WeakHandle<P> {
 impl<P: Process> WeakHandle<P> {
     /// Sends a message to the process.
     pub async fn send(&self, msg: P::Message) -> Result<(), SendError> {
-        if let Some(send) = self.send.upgrade() {
-            match send.send(msg).await {
-                Ok(_) => Ok(()),
-                Err(_) => Err(SendError::ProcessStopped),
-            }
-        } else {
-            Err(SendError::ProcessStopping)
+        match self.send.send(msg).await {
+            Ok(_) => Ok(()),
+            Err(_) => Err(SendError::ProcessStopped),
         }
     }
 
     /// Sends a message to the process, or drop if the mailbox is full.
     pub async fn send_or_drop(&self, msg: P::Message) -> Result<(), SendError> {
-        if let Some(send) = self.send.upgrade() {
-            match send.try_send(msg) {
-                Err(tachyonix::TrySendError::Closed(_)) => Err(SendError::ProcessStopped),
-                _ => Ok(()),
-            }
-        } else {
-            Err(SendError::ProcessStopping)
+        match self.send.try_send(msg) {
+            Err(tachyonix::TrySendError::Closed(_)) => Err(SendError::ProcessStopped),
+            _ => Ok(()),
         }
     }
 
@@ -168,8 +173,9 @@ impl<P: Process> WeakHandle<P> {
     /// Attempts to upgrade the WeakHandle to a Handle.
     pub fn upgrade(&self) -> Option<Handle<P>> {
         Some(Handle {
-            send: self.send.upgrade()?,
+            send: self.send.clone(),
             output: self.output.clone(),
+            death_event: self.death_event.clone(),
             _to_drop: self._to_drop.upgrade()?,
         })
     }
