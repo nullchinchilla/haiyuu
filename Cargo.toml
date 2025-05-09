@@ -2,7 +2,7 @@
 [package]
 name = "haiyuu"
 version = "0.4.2"
-edition = "2021"
+edition = "2024"
 description = "experimental actor-like library"
 license = "ISC"
 repository = "https://github.com/nullchinchilla/haiyuu"

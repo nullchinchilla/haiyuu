@@ -99,7 +99,7 @@ impl<P: Process> Handle<P> {
     }
 
     /// Sends a message to the process, or drop it if the mailbox is full.
-    pub async fn send_or_drop(&self, msg: P::Message) -> Result<(), SendError> {
+    pub fn send_or_drop(&self, msg: P::Message) -> Result<(), SendError> {
         match self.send.try_send(msg) {
             Err(tachyonix::TrySendError::Closed(_)) => Err(SendError::ProcessStopped),
             _ => Ok(()),
@@ -111,9 +111,11 @@ impl<P: Process> Handle<P> {
         self.output.get()
     }
 
-    /// Waits for the the output value of the process].
-    pub async fn wait(&self) -> &P::Output {
-        self.death_event.wait_until(|| self.output.get()).await
+    /// Waits for the process to die.
+    pub async fn wait(&self) {
+        self.death_event
+            .wait_until(|| self.output.get().map(|_| ()))
+            .await;
     }
 
     /// Downgrades the Handle to a WeakHandle.
@@ -158,7 +160,7 @@ impl<P: Process> WeakHandle<P> {
     }
 
     /// Sends a message to the process, or drop if the mailbox is full.
-    pub async fn send_or_drop(&self, msg: P::Message) -> Result<(), SendError> {
+    pub fn send_or_drop(&self, msg: P::Message) -> Result<(), SendError> {
         match self.send.try_send(msg) {
             Err(tachyonix::TrySendError::Closed(_)) => Err(SendError::ProcessStopped),
             _ => Ok(()),
